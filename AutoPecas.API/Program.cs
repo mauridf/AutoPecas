@@ -7,6 +7,9 @@ using Microsoft.EntityFrameworkCore;
 using System.Text.Json.Serialization;
 using Microsoft.OpenApi.Models;
 using System.Reflection;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -84,6 +87,12 @@ builder.Services.AddSwaggerGen(c =>
     }
 });
 
+// Adicionar health checks
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<AutoPecasDbContext>(
+        name: "database",
+        tags: new[] { "ready" });
+
 var app = builder.Build();
 
 // Habilitar CORS
@@ -101,6 +110,19 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+// Configurar endpoints de health check
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = _ => true,
+    ResponseWriter = WriteResponse
+});
+
+app.MapHealthChecks("/health/database", new HealthCheckOptions
+{
+    Predicate = reg => reg.Tags.Contains("ready"),
+    ResponseWriter = WriteResponse
+});
+
 app.UseHttpsRedirection();
 
 app.UseAuthorization();
@@ -108,3 +130,30 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+static async Task WriteResponse(HttpContext context, HealthReport report)
+{
+    context.Response.ContentType = "application/json; charset=utf-8";
+
+    var options = new JsonSerializerOptions
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    var result = new
+    {
+        Status = report.Status.ToString(),
+        Duration = report.TotalDuration,
+        Checks = report.Entries.Select(entry => new
+        {
+            Name = entry.Key,
+            Status = entry.Value.Status.ToString(),
+            Duration = entry.Value.Duration,
+            Exception = entry.Value.Exception?.Message,
+            Data = entry.Value.Data
+        })
+    };
+
+    await context.Response.WriteAsync(JsonSerializer.Serialize(result, options));
+}
